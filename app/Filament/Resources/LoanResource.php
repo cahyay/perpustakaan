@@ -39,7 +39,8 @@ class LoanResource extends Resource
 
     public static function getNavigationBadgeColor(): ?string
     {
-        $hasOverdue = static::getModel()::whereIn('status', ['dipinjam', 'terlambat'])
+        $hasOverdue = static::getModel()::with('book')
+            ->whereIn('status', ['dipinjam', 'terlambat'])
             ->where('is_lost', false)
             ->get()
             ->contains(fn (Loan $loan): bool => $loan->isOverdue());
@@ -49,8 +50,14 @@ class LoanResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        // Sinkronisasi otomatis: ubah status 'dipinjam' menjadi 'terlambat' di database jika sudah melewati jatuh tempo
-        static::getModel()::where('status', 'dipinjam')
+        // 1. Otomatis batalkan booking dari web mahasiswa yang tidak diambil melebihi 1x24 jam
+        static::getModel()::where('status', 'booked')
+            ->where('created_at', '<', now()->subHours(24))
+            ->update(['status' => 'dibatalkan']);
+
+        // 2. Sinkronisasi otomatis: ubah status 'dipinjam' menjadi 'terlambat' di database jika sudah melewati jatuh tempo
+        static::getModel()::with('book')
+            ->where('status', 'dipinjam')
             ->where('is_lost', false)
             ->get()
             ->each(function (Loan $loan): void {
@@ -80,30 +87,26 @@ class LoanResource extends Resource
         return $form
             ->schema([
                 // Section Pencarian Cepat Kode Booking dari UI User
-                Forms\Components\Section::make('Cek Kode Booking Mahasiswa (Dari UI User)')
-                    ->description('Pilih atau ketik kode booking (AKT-XXXX) yang ditunjukkan mahasiswa agar seluruh data peminjam dan buku terisi otomatis. Kosongkan jika peminjaman langsung di tempat.')
+                Forms\Components\Section::make('Cek Kode Booking Mahasiswa (Dari Web Katalog)')
+                    ->description('Pilih atau ketik kode booking (AKT-XXXX) yang ditunjukkan mahasiswa (berlaku maksimal 1x24 jam sejak pemesanan) agar seluruh data terisi otomatis.')
                     ->schema([
                         Forms\Components\Select::make('lookup_booking_code')
                             ->label('Cari Kode Booking (AKT-XXXX)')
                             ->placeholder('Ketik kode booking, contoh: AKT-8X2P...')
-                            ->options(function () {
+                            ->options(function (): array {
                                 return Loan::with(['anggota', 'book'])
+                                    ->where('status', 'booked')
+                                    ->where('created_at', '>=', now()->subHours(24))
                                     ->whereNotNull('booking_code')
                                     ->latest()
+                                    ->limit(50)
                                     ->get()
-                                    ->mapWithKeys(function (Loan $loan) {
+                                    ->mapWithKeys(function (Loan $loan): array {
                                         $nama = $loan->anggota?->nama ?? $loan->member_nim;
                                         $buku = $loan->book?->judul ?? '-';
-                                        $statusLabel = match ($loan->status) {
-                                            'booked' => 'Belum Diambil',
-                                            'dipinjam' => 'Sudah Diambil',
-                                            'dikembalikan' => 'Dikembalikan',
-                                            'terlambat' => 'Terlambat',
-                                            'dibatalkan' => 'Dibatalkan',
-                                            default => ucfirst($loan->status),
-                                        };
+                                        $batas = $loan->booking_expires_at?->locale('id')->translatedFormat('d M H:i') ?? '-';
 
-                                        return [$loan->booking_code => "{$loan->booking_code} — {$nama} ({$buku}) [{$statusLabel}]"];
+                                        return [$loan->booking_code => "{$loan->booking_code} — {$nama} ({$buku}) [Batas Ambil: {$batas}]"];
                                     })
                                     ->toArray();
                             })
@@ -111,7 +114,7 @@ class LoanResource extends Resource
                             ->live()
                             ->dehydrated(false)
                             ->visible(fn (?Loan $record): bool => $record === null)
-                            ->afterStateUpdated(function (Forms\Set $set, ?string $state) {
+                            ->afterStateUpdated(function (Forms\Set $set, ?string $state): void {
                                 if (! $state) {
                                     return;
                                 }
@@ -125,8 +128,8 @@ class LoanResource extends Resource
                                 $set('member_nim', $booking->member_nim);
                                 $set('card_type', $booking->card_type ?? 'KTM');
                                 $set('book_id', $booking->book_id);
-                                $set('tanggal_pinjam', $booking->tanggal_pinjam?->toDateString() ?? today()->toDateString());
-                                $set('status', $booking->status === 'booked' ? 'dipinjam' : $booking->status);
+                                $set('tanggal_pinjam', today()->toDateString());
+                                $set('status', 'dipinjam');
                             }),
 
                         Forms\Components\Placeholder::make('info_booking_ditemukan')
@@ -162,7 +165,7 @@ class LoanResource extends Resource
                             ->searchable(['nama', 'nim_no_anggota'])
                             ->preload()
                             ->live()
-                            ->afterStateUpdated(function (Forms\Set $set, ?string $state) {
+                            ->afterStateUpdated(function (Forms\Set $set, ?string $state): void {
                                 if ($state) {
                                     $anggota = Anggota::find($state);
                                     $set('member_nim', $anggota?->nim_no_anggota);
@@ -174,15 +177,17 @@ class LoanResource extends Resource
 
                         Forms\Components\Select::make('member_nim')
                             ->label('Cari Berdasarkan NIM / No. Anggota')
-                            ->options(fn () => Anggota::query()
+                            ->searchable()
+                            ->getSearchResultsUsing(fn (string $search): array => Anggota::query()
                                 ->whereNotNull('nim_no_anggota')
+                                ->where(fn ($q) => $q->where('nim_no_anggota', 'like', "%{$search}%")->orWhere('nama', 'like', "%{$search}%"))
                                 ->orderBy('nim_no_anggota')
+                                ->limit(30)
                                 ->pluck('nim_no_anggota', 'nim_no_anggota')
                                 ->toArray())
-                            ->searchable()
-                            ->preload()
+                            ->getOptionLabelUsing(fn ($value): ?string => $value)
                             ->live()
-                            ->afterStateUpdated(function (Forms\Set $set, ?string $state) {
+                            ->afterStateUpdated(function (Forms\Set $set, ?string $state): void {
                                 if ($state) {
                                     $anggota = Anggota::where('nim_no_anggota', trim($state))->first();
                                     $set('anggota_id', $anggota?->id);
@@ -197,7 +202,13 @@ class LoanResource extends Resource
                                         return;
                                     }
                                     $activeCount = Loan::where('member_nim', trim($value))
-                                        ->whereIn('status', ['booked', 'dipinjam', 'terlambat'])
+                                        ->where(function ($q): void {
+                                            $q->whereIn('status', ['dipinjam', 'terlambat'])
+                                                ->orWhere(function ($sub): void {
+                                                    $sub->where('status', 'booked')
+                                                        ->where('created_at', '>=', now()->subHours(24));
+                                                });
+                                        })
                                         ->when($record, fn ($q) => $q->where('id', '!=', $record->id))
                                         ->count();
 
@@ -323,7 +334,7 @@ class LoanResource extends Resource
                             ]),
 
                         Forms\Components\DatePicker::make('tanggal_pinjam')
-                            ->label('Tanggal Pinjam / Booking')
+                            ->label('Tanggal Pinjam')
                             ->default(today())
                             ->native(false)
                             ->live()
@@ -355,16 +366,20 @@ class LoanResource extends Resource
                             }),
 
                         Forms\Components\ToggleButtons::make('status')
-                            ->label('Konfirmasi Status Pengambilan / Transaksi')
+                            ->label('Status Transaksi Peminjaman')
                             ->columnSpanFull()
                             ->inline()
-                            ->options([
-                                'booked' => 'Belum Diambil (Booking)',
-                                'dipinjam' => 'Sudah Diambil (Dipinjam)',
-                                'dikembalikan' => 'Dikembalikan',
-                                'terlambat' => 'Terlambat',
-                                'dibatalkan' => 'Dibatalkan',
-                            ])
+                            ->options(fn (?Loan $record): array => $record === null
+                                ? [
+                                    'dipinjam' => 'Sudah Diambil (Dipinjam)',
+                                ]
+                                : [
+                                    'booked' => 'Belum Diambil (Booking)',
+                                    'dipinjam' => 'Sudah Diambil (Dipinjam)',
+                                    'dikembalikan' => 'Dikembalikan',
+                                    'terlambat' => 'Terlambat',
+                                    'dibatalkan' => 'Dibatalkan',
+                                ])
                             ->colors([
                                 'booked' => 'info',
                                 'dipinjam' => 'warning',
@@ -386,13 +401,15 @@ class LoanResource extends Resource
                             ->label('Tanggal Pengembalian (Aktual)')
                             ->helperText('Terisi otomatis tanggal hari ini ketika tombol "Kembalikan / Selesaikan" ditekan.')
                             ->nullable()
-                            ->native(false),
+                            ->native(false)
+                            ->visible(fn (?Loan $record): bool => $record !== null),
 
                         Forms\Components\TextInput::make('fine_amount')
                             ->label('Nominal Denda (Rp)')
                             ->numeric()
                             ->prefix('Rp')
-                            ->default(0),
+                            ->default(0)
+                            ->visible(fn (?Loan $record): bool => $record !== null),
 
                         Forms\Components\Toggle::make('is_extended')
                             ->label('Status Diperpanjang (+7 Hari Kerja)')
@@ -401,7 +418,8 @@ class LoanResource extends Resource
 
                         Forms\Components\Toggle::make('is_lost')
                             ->label('Status Buku Hilang')
-                            ->helperText('Aktifkan jika buku hilang (stok tidak akan dikembalikan ke rak).'),
+                            ->helperText('Aktifkan jika buku hilang (stok tidak akan dikembalikan ke rak).')
+                            ->visible(fn (?Loan $record): bool => $record !== null),
                     ])
                     ->columns(2),
             ]);
@@ -456,10 +474,12 @@ class LoanResource extends Resource
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('jatuh_tempo')
-                    ->label('Jatuh Tempo')
+                    ->label('Jatuh Tempo / Batas Ambil')
                     ->state(function (Loan $record): ?string {
                         if ($record->status === 'booked') {
-                            return 'Belum Diambil';
+                            return $record->booking_expires_at
+                                ? 'Ambil s/d ' . $record->booking_expires_at->locale('id')->translatedFormat('d M, H:i')
+                                : 'Menunggu Diambil (1x24 Jam)';
                         }
                         if ($record->status === 'dibatalkan') {
                             return 'Dibatalkan';
@@ -468,6 +488,14 @@ class LoanResource extends Resource
                         return $record->jatuh_tempo?->locale('id')->translatedFormat('d M Y');
                     })
                     ->description(function (Loan $record): ?string {
+                        if ($record->status === 'booked' && $record->booking_expires_at) {
+                            if ($record->isBookingExpired()) {
+                                return 'Hangus (Lewat 24 jam)';
+                            }
+
+                            return 'Batas ambil maksimal 1x24 jam';
+                        }
+
                         if (in_array($record->status, ['dikembalikan', 'booked', 'dibatalkan']) || ! $record->jatuh_tempo) {
                             return null;
                         }
@@ -485,7 +513,7 @@ class LoanResource extends Resource
 
                         return 'Sisa ' . today()->diffInDays($record->jatuh_tempo->copy()->startOfDay()) . " hari{$extLabel}";
                     })
-                    ->color(fn (Loan $record): ?string => $record->isOverdue() ? 'danger' : 'gray'),
+                    ->color(fn (Loan $record): ?string => ($record->isOverdue() || $record->isBookingExpired()) ? 'danger' : 'gray'),
 
                 Tables\Columns\TextColumn::make('status')
                     ->label('Status')
@@ -495,7 +523,7 @@ class LoanResource extends Resource
                             return 'Buku Hilang';
                         }
                         if ($state === 'booked') {
-                            return 'Belum Diambil';
+                            return 'Belum Diambil (Booking)';
                         }
                         if ($state === 'dibatalkan') {
                             return 'Dibatalkan';
@@ -578,7 +606,8 @@ class LoanResource extends Resource
                             return $query;
                         }
 
-                        $activeIds = Loan::whereIn('status', ['dipinjam', 'terlambat'])
+                        $activeIds = Loan::with('book')
+                            ->whereIn('status', ['dipinjam', 'terlambat'])
                             ->where('is_lost', false)
                             ->get()
                             ->filter(function (Loan $loan) use ($value): bool {
@@ -627,12 +656,12 @@ class LoanResource extends Resource
                     ->falseLabel('Buku Tidak Hilang'),
             ])
             ->actions([
-                // 1. Tombol Konfirmasi Ambil (Untuk Kode Booking AKT-XXXX)
+                // 1. Tombol Konfirmasi Ambil (Untuk Kode Booking AKT-XXXX dari Web)
                 Tables\Actions\Action::make('konfirmasiAmbil')
                     ->label('Konfirmasi Ambil')
                     ->icon('heroicon-o-check-badge')
                     ->color('info')
-                    ->visible(fn (Loan $record): bool => $record->status === 'booked')
+                    ->visible(fn (Loan $record): bool => $record->status === 'booked' && ! $record->isBookingExpired())
                     ->requiresConfirmation()
                     ->modalHeading(fn (Loan $record): string => "Konfirmasi Pengambilan ({$record->booking_code})")
                     ->modalDescription(fn (Loan $record): string => "Pastikan kartu identitas ({$record->card_type}) milik {$record->anggota?->nama} (NIM: {$record->member_nim} • Kelas: " . ($record->anggota?->kelas ?? '-') . ") sudah diserahkan. Stok buku akan otomatis berkurang 1.")
@@ -744,7 +773,7 @@ class LoanResource extends Resource
                         }
 
                         $pesan = "Halo *{$nama}*,\n\n"
-                            . "Pengingat Peminjaman Buku — *Perpustakaan Pustaka Akuntansi*\n\n"
+                            . "Pengingat Peminjaman Buku — *Perpustakaan Jurusan Akuntansi*\n\n"
                             . "• Kode Booking : *{$kodeBooking}*\n"
                             . "• Judul Buku : *{$judulBuku}*\n"
                             . "• Jatuh Tempo : *{$jatuhTempoTeks}*\n"

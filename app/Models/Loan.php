@@ -115,21 +115,6 @@ class Loan extends Model
     }
 
     /**
-     * Otomatis mengembalikan status 'terlambat' jika sudah melewati tanggal jatuh tempo.
-     */
-    public function getStatusAttribute(?string $value): ?string
-    {
-        if ($value === 'dipinjam' && ! $this->is_lost && $this->jatuh_tempo) {
-            $due = $this->jatuh_tempo->copy()->startOfDay();
-            if (today()->gt($due)) {
-                return 'terlambat';
-            }
-        }
-
-        return $value;
-    }
-
-    /**
      * Hitung tanggal jatuh tempo otomatis (hari kerja + tambahan 7 hari kerja jika diperpanjang).
      */
     public function getJatuhTempoAttribute(): ?Carbon
@@ -146,8 +131,12 @@ class Loan extends Model
 
     public function calculateOverdueWeekdays(?Carbon $returnDate = null): int
     {
+        if (in_array($this->status, ['booked', 'dibatalkan'])) {
+            return 0;
+        }
+
         $due = $this->jatuh_tempo;
-        if (! $due || in_array($this->getRawOriginal('status'), ['booked', 'dibatalkan'])) {
+        if (! $due) {
             return 0;
         }
 
@@ -193,17 +182,41 @@ class Loan extends Model
 
     public function isOverdue(): bool
     {
-        $rawStatus = $this->getRawOriginal('status');
-        if (in_array($rawStatus, ['dikembalikan', 'booked', 'dibatalkan'])) {
+        if (in_array($this->status, ['dikembalikan', 'booked', 'dibatalkan'])) {
             return false;
         }
 
-        $due = $this->jatuh_tempo;
-        if ($due) {
-            return today()->gt($due->copy()->startOfDay());
+        if ($this->status === 'terlambat') {
+            return true;
         }
 
-        return $rawStatus === 'terlambat';
+        $due = $this->jatuh_tempo;
+
+        return $due ? today()->gt($due->copy()->startOfDay()) : false;
+    }
+
+    /**
+     * Batas waktu pengambilan booking maksimal 1x24 jam sejak booking dibuat.
+     */
+    public function getBookingExpiresAtAttribute(): ?Carbon
+    {
+        if ($this->status !== 'booked' || ! $this->created_at) {
+            return null;
+        }
+
+        return $this->created_at->copy()->addHours(24);
+    }
+
+    /**
+     * Cek apakah booking sudah hangus melewati batas 1x24 jam.
+     */
+    public function isBookingExpired(): bool
+    {
+        if ($this->status !== 'booked' || ! $this->created_at) {
+            return false;
+        }
+
+        return now()->gt($this->created_at->copy()->addHours(24));
     }
 
     public function book(): BelongsTo
