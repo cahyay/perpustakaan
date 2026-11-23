@@ -26,7 +26,7 @@ class ListBooks extends ListRecords
     {
         return [
             Actions\Action::make('downloadTemplate')
-                ->label('Download Template Excel/CSV')
+                ->label('Unduh Template Excel')
                 ->icon('heroicon-o-arrow-down-tray')
                 ->color('gray')
                 ->action(function (): BinaryFileResponse {
@@ -104,7 +104,7 @@ class ListBooks extends ListRecords
                 }),
 
             Actions\Action::make('importBooks')
-                ->label('Import Buku (Excel/CSV)')
+                ->label('Impor Buku')
                 ->icon('heroicon-o-arrow-up-tray')
                 ->color('success')
                 ->form([
@@ -124,9 +124,9 @@ class ListBooks extends ListRecords
                         ->preserveFilenames()
                         ->required(),
                 ])
-                ->modalHeading('Import Data Buku dari Excel / CSV')
+                ->modalHeading('Impor Data Buku dari Excel / CSV')
                 ->modalDescription('Unggah data koleksi buku secara massal. Sistem menggunakan ISBN atau Kode Buku sebagai pengenal unik.')
-                ->modalSubmitActionLabel('Mulai Import')
+                ->modalSubmitActionLabel('Mulai Impor')
                 ->modalWidth('md')
                 ->action(function (array $data): void {
                     $disk = Storage::disk('local');
@@ -414,14 +414,14 @@ class ListBooks extends ListRecords
                     $skippedMsg = $skippedCount > 0 ? " ({$skippedCount} baris dilewati karena judul kosong)" : '';
 
                     Notification::make()
-                        ->title('Import Koleksi Buku Selesai')
+                        ->title('Impor Koleksi Buku Selesai')
                         ->body("Berhasil memproses {$totalProcessed} buku ({$createdCount} baru, {$updatedCount} diperbarui){$skippedMsg}.")
                         ->success()
                         ->send();
                 }),
 
             Actions\Action::make('createCategory')
-                ->label('New Kategori')
+                ->label('Tambah Kategori')
                 ->icon('heroicon-o-tag')
                 ->color('warning')
                 ->modalHeading('Tambah Kategori Baru')
@@ -458,7 +458,9 @@ class ListBooks extends ListRecords
                         ->send();
                 }),
 
-            Actions\CreateAction::make(),
+            Actions\CreateAction::make()
+                ->label('Tambah Buku')
+                ->icon('heroicon-m-plus'),
         ];
     }
 }
