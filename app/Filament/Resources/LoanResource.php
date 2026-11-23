@@ -374,7 +374,6 @@ class LoanResource extends Resource
                                     'dipinjam' => 'Sudah Diambil (Dipinjam)',
                                 ]
                                 : [
-                                    'booked' => 'Belum Diambil (Booking)',
                                     'dipinjam' => 'Sudah Diambil (Dipinjam)',
                                     'dikembalikan' => 'Dikembalikan',
                                     'terlambat' => 'Terlambat',

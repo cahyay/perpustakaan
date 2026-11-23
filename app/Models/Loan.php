@@ -39,11 +39,13 @@ class Loan extends Model
 
     protected static function booted(): void
     {
-        // Generate kode booking AKT-XXXX & sinkronkan NIM dari tabel anggotas
+        // Generate kode otomatis: AKT-XXXX (Booking Web User) atau PJM-XXXX (Pinjam Langsung oleh Admin)
         static::creating(function (Loan $loan): void {
             if (empty($loan->booking_code)) {
+                $prefix = ($loan->status === 'booked') ? 'AKT-' : 'PJM-';
+
                 do {
-                    $code = 'AKT-' . strtoupper(Str::random(4));
+                    $code = $prefix . strtoupper(Str::random(4));
                 } while (static::where('booking_code', $code)->exists());
 
                 $loan->booking_code = $code;
@@ -219,6 +221,19 @@ class Loan extends Model
         return now()->gt($this->created_at->copy()->addHours(24));
     }
 
+    /**
+     * Cek apakah kode transaksi berasal dari peminjaman langsung (PJM-) atau booking web (AKT-).
+     */
+    public function isDirectLoanCode(): bool
+    {
+        return str_starts_with((string) $this->booking_code, 'PJM-');
+    }
+
+    public function getTransactionCodeLabelAttribute(): string
+    {
+        return $this->isDirectLoanCode() ? 'Kode Pinjam' : 'Kode Booking';
+    }
+
     public function book(): BelongsTo
     {
         return $this->belongsTo(Book::class);
@@ -227,5 +242,10 @@ class Loan extends Model
     public function anggota(): BelongsTo
     {
         return $this->belongsTo(Anggota::class);
+    }
+
+    public function member(): BelongsTo
+    {
+        return $this->belongsTo(Anggota::class, 'anggota_id');
     }
 }

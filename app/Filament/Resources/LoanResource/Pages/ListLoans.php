@@ -7,7 +7,9 @@ use App\Filament\Resources\LoanResource\Widgets\LoanStatsOverview;
 use App\Models\Loan;
 use Filament\Actions;
 use Filament\Forms\Components\Select;
+use Filament\Resources\Components\Tab;
 use Filament\Resources\Pages\ListRecords;
+use Illuminate\Database\Eloquent\Builder;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ListLoans extends ListRecords
@@ -18,6 +20,44 @@ class ListLoans extends ListRecords
     {
         return [
             LoanStatsOverview::class,
+        ];
+    }
+
+    public function getTabs(): array
+    {
+        $activeBookingCount = Loan::where('status', 'booked')
+            ->where('created_at', '>=', now()->subHours(24))
+            ->count();
+
+        $borrowedCount = Loan::where('status', 'dipinjam')->count();
+        $overdueCount = Loan::where('status', 'terlambat')->count();
+
+        return [
+            'semua' => Tab::make('Semua Transaksi'),
+
+            'booking' => Tab::make('Rekap Booking User')
+                ->icon('heroicon-m-ticket')
+                ->badge($activeBookingCount > 0 ? (string) $activeBookingCount : null)
+                ->badgeColor('info')
+                ->modifyQueryUsing(fn (Builder $query): Builder => $query
+                    ->where('status', 'booked')
+                    ->where('created_at', '>=', now()->subHours(24))),
+
+            'dipinjam' => Tab::make('Sedang Dipinjam')
+                ->icon('heroicon-m-book-open')
+                ->badge($borrowedCount > 0 ? (string) $borrowedCount : null)
+                ->badgeColor('warning')
+                ->modifyQueryUsing(fn (Builder $query): Builder => $query->where('status', 'dipinjam')),
+
+            'terlambat' => Tab::make('Terlambat')
+                ->icon('heroicon-m-exclamation-triangle')
+                ->badge($overdueCount > 0 ? (string) $overdueCount : null)
+                ->badgeColor('danger')
+                ->modifyQueryUsing(fn (Builder $query): Builder => $query->where('status', 'terlambat')),
+
+            'selesai' => Tab::make('Selesai & Batal')
+                ->icon('heroicon-m-check-circle')
+                ->modifyQueryUsing(fn (Builder $query): Builder => $query->whereIn('status', ['dikembalikan', 'dibatalkan'])),
         ];
     }
 
